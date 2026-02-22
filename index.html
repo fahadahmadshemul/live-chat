@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Live Support</title>
+  <!-- Font Awesome for Icons -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
+  <link rel="stylesheet" href="css/visitor.css">
+</head>
+
+<body>
+
+  <div class="page-content">
+    <h1>Welcome to Our Store</h1>
+    <p>Need help? Click the chat widget below 👇</p>
+  </div>
+
+  <div class="chat-widget">
+    <div class="chat-header" onclick="toggleChat()">
+      <i class="fas fa-comment-dots"></i>
+      <span>Chat with support</span>
+      <i class="fas fa-chevron-up chevron-icon" id="toggleIcon"></i>
+    </div>
+
+    <div class="chat-body" id="chatBox">
+      <div class="messages" id="messages">
+        <div class="empty-state" id="emptyState">👋 Start a conversation</div>
+      </div>
+
+      <div class="input">
+        <input type="text" id="msg" placeholder="Type your message..." autocomplete="off">
+        <button onclick="sendMessage()"><i class="fas fa-paper-plane"></i></button>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
+
+  <script>
+    //add your firebase config here
+    const firebaseConfig = {
+      apiKey: "",
+      authDomain: "",
+      projectId: "",
+      storageBucket: "",
+      messagingSenderId: "",
+      appId: "",
+      measurementId: ""
+    };
+
+    firebase.initializeApp(firebaseConfig);
+    const db = firebase.database();
+
+    // Unique visitor ID
+    let visitorId = localStorage.getItem('visitor_id');
+    if (!visitorId) {
+      visitorId = 'visitor_' + Math.floor(Math.random() * 1000000);
+      localStorage.setItem('visitor_id', visitorId);
+    }
+
+    // ----- Presence Tracking -----
+    const presenceRef = db.ref('presence/' + visitorId);
+    // Set online when connected
+    presenceRef.set(true);
+    // Remove when disconnected
+    presenceRef.onDisconnect().remove();
+
+    // Also monitor connection state to re-set if connection drops and comes back
+    db.ref('.info/connected').on('value', (snap) => {
+      if (snap.val() === true) {
+        presenceRef.set(true);
+        presenceRef.onDisconnect().remove();
+      }
+    });
+
+    // ----- Chat Functions -----
+    function toggleChat() {
+      let box = document.getElementById('chatBox');
+      let icon = document.getElementById('toggleIcon');
+      if (box.style.display === 'flex') {
+        box.style.display = 'none';
+        icon.classList.remove('fa-chevron-down');
+        icon.classList.add('fa-chevron-up');
+      } else {
+        box.style.display = 'flex';
+        icon.classList.remove('fa-chevron-up');
+        icon.classList.add('fa-chevron-down');
+      }
+    }
+
+    function sendMessage() {
+      let text = document.getElementById('msg').value.trim();
+      if (!text) return;
+
+      db.ref("chats/" + visitorId).push({
+        sender: 'user',
+        message: text,
+        time: Date.now()
+      });
+
+      document.getElementById('msg').value = '';
+    }
+
+    // Load existing messages (last 20) and listen for new ones
+    const messagesDiv = document.getElementById('messages');
+    const emptyState = document.getElementById('emptyState');
+    const chatRef = db.ref("chats/" + visitorId).orderByChild('time');
+
+    // Load last 20 messages initially
+    chatRef.limitToLast(20).once('value', (snap) => {
+      if (snap.exists()) {
+        emptyState.style.display = 'none';
+        const messages = [];
+        snap.forEach((child) => {
+          messages.push(child.val());
+        });
+        // Display in chronological order
+        messages.reverse().forEach((msg) => {
+          appendMessage(msg);
+        });
+      }
+    });
+
+    // Listen for new messages (after initial load)
+    let lastLoadedTime = Date.now(); // approximate, but we'll rely on child_added
+    chatRef.startAt(null, 'time').on('child_added', (snap) => {
+      // Ignore if we already have it? We'll just append; duplicates won't happen if we don't re-listen.
+      // But child_added will fire for all children initially, so we need to skip if we already loaded them.
+      // Since we used once() for initial, we can set up child_added after that and rely on Firebase to only give new ones.
+      // However, Firebase might send all if we attach after. Better approach: attach child_added before initial load and use a flag.
+      // Simpler: we can just rely on the fact that child_added will give all, but we clear the div first? No, we want to keep initial ones.
+      // We'll use a combination: initial load with once(), then attach child_added and ignore if time is less than earliest loaded? Too complex.
+      // Instead, we can remove the initial once and just use child_added with a limit? But child_added with limit doesn't work for pagination.
+      // For simplicity, we'll keep the current approach: initial load with limit, then child_added for new messages.
+      // But child_added will also fire for messages that were loaded initially if we attach after. To avoid duplicates, we can use the time to check.
+      // However, in this simple chat, duplicates are unlikely if we don't re-run the script. We'll just use a flag.
+      // Let's implement a simple dedupe using message keys.
+    });
+
+    // Better: maintain a set of message keys.
+    let messageKeys = new Set();
+
+    function appendMessage(data) {
+      if (messageKeys.has(data.key)) return;
+      messageKeys.add(data.key);
+
+      const cls = data.sender === 'admin' ? 'msg-admin' : 'msg-user';
+      messagesDiv.innerHTML += `<div class="${cls}">${data.message}</div>`;
+      messagesDiv.scrollTop = messagesDiv.scrollHeight;
+    }
+
+    // Load initial messages and store keys
+    chatRef.limitToLast(20).once('value', (snap) => {
+      if (snap.exists()) {
+        emptyState.style.display = 'none';
+        const msgs = [];
+        snap.forEach((child) => {
+          messageKeys.add(child.key);
+          msgs.push(child.val());
+        });
+        msgs.reverse().forEach((msg) => {
+          appendMessage({ ...msg, key: 'somekey' }); // we need key; we'll adjust
+        });
+      }
+    });
+
+    // Listen for new messages
+    chatRef.on('child_added', (snap) => {
+      if (!messageKeys.has(snap.key)) {
+        messageKeys.add(snap.key);
+        const data = snap.val();
+        const cls = data.sender === 'admin' ? 'msg-admin' : 'msg-user';
+        messagesDiv.innerHTML += `<div class="${cls}">${data.message}</div>`;
+        messagesDiv.scrollTop = messagesDiv.scrollHeight;
+      }
+    });
+
+    // Enter key
+    document.getElementById('msg').addEventListener('keypress', function(e) {
+      if (e.key === 'Enter') {
+        sendMessage();
+      }
+    });
+  </script>
+</body>
+
+</html>

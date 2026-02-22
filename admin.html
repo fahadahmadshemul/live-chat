@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=yes">
+  <title>Admin Inbox �� Support Chat</title>
+  <!-- Font Awesome -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
+  <link rel="stylesheet" href="css/admin.css">
+</head>
+
+<body>
+
+  <div class="container">
+    <!-- Left panel: user list -->
+    <div class="users" id="sidebar">
+      <div class="sidebar-header">
+        <h2><i class="fas fa-comments"></i> Conversations</h2>
+        <button class="close-sidebar" id="closeSidebarBtn" onclick="toggleSidebar()"><i class="fas fa-times"></i></button>
+      </div>
+      <div class="search-box">
+        <input type="text" id="userSearch" placeholder="Search visitors...">
+      </div>
+      <div class="user-list" id="userList">
+        <!-- Users will be injected dynamically -->
+      </div>
+    </div>
+
+    <!-- Right panel: chat -->
+    <div class="chat">
+      <!-- Header is ALWAYS visible, even when no user is selected -->
+      <div class="chat-header" id="chatHeader">
+        <button class="menu-toggle" id="menuToggleBtn" onclick="toggleSidebar()"><i class="fas fa-bars"></i></button>
+        <div class="avatar" id="activeUserAvatar">�9�4</div>
+        <div class="chat-header-info">
+          <h3 id="activeUserName">Select a user</h3>
+          <p id="onlineStatus"><i class="fas fa-circle" style="color: #94a3b8; font-size: 8px;"></i> Offline</p>
+        </div>
+      </div>
+
+      <div class="messages" id="messages">
+        <div class="no-chat-selected" id="noChatPlaceholder">
+          <i class="fas fa-comment-dots"></i>
+          <p>Select a conversation to start chatting</p>
+        </div>
+      </div>
+
+      <div class="send" id="inputArea" style="display: none;">
+        <input type="text" id="msg" placeholder="Type your reply..." autocomplete="off">
+        <button onclick="sendMessage()"><i class="fas fa-paper-plane"></i></button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Firebase SDKs -->
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
+
+  <script>
+    //add your firebase config here
+    const firebaseConfig = {
+      apiKey: "",
+      authDomain: "",
+      projectId: "",
+      storageBucket: "",
+      messagingSenderId: "",
+      appId: "",
+      measurementId: ""
+    };
+
+    firebase.initializeApp(firebaseConfig);
+    const db = firebase.database();
+
+    let activeUser = null;                // Currently selected visitor ID
+    let allUsers = [];                    // Store all user IDs for filtering
+    let userPresence = {};                 // Presence status { [id]: true/false }
+
+    // Pagination variables
+    let currentMessagesRef = null;         // Reference to the active chat messages
+    let messageSet = new Set();             // Set of loaded message keys
+    let oldestMessageTime = null;           // Timestamp of oldest loaded message (for pagination)
+    let loadingOlder = false;               // Prevent multiple simultaneous loads
+    let hasMoreMessages = true;              // Assume there are more until proven otherwise
+
+    // DOM elements
+    const userListDiv = document.getElementById('userList');
+    const messagesDiv = document.getElementById('messages');
+    const placeholder = document.getElementById('noChatPlaceholder');
+    const chatHeader = document.getElementById('chatHeader');
+    const inputArea = document.getElementById('inputArea');
+    const activeUserNameSpan = document.getElementById('activeUserName');
+    const activeUserAvatar = document.getElementById('activeUserAvatar');
+    const onlineStatus = document.getElementById('onlineStatus');
+    const sidebar = document.getElementById('sidebar');
+
+    // Listen for presence changes
+    const presenceRef = db.ref('presence');
+    presenceRef.on('value', (snap) => {
+      userPresence = snap.val() || {};
+      renderUserList();
+      // If a user is selected, update their online status in header
+      if (activeUser) {
+        updateHeaderStatus(activeUser);
+      }
+    });
+
+    // Listen for chats (users) and update list
+    db.ref("chats").on("value", snap => {
+      const users = snap.val();
+      allUsers = users ? Object.keys(users) : [];
+      renderUserList();
+    });
+
+    // Search input filter
+    const searchInput = document.getElementById('userSearch');
+    searchInput.addEventListener('input', renderUserList);
+
+    function renderUserList() {
+      const searchTerm = searchInput.value.toLowerCase();
+      const filteredUsers = allUsers.filter(id => id.toLowerCase().includes(searchTerm));
+
+      userListDiv.innerHTML = '';
+      if (filteredUsers.length === 0) {
+        userListDiv.innerHTML = '<div style="padding: 20px; text-align: center; color: #94a3b8;">No users found</div>';
+        return;
+      }
+
+      filteredUsers.forEach(id => {
+        const firstChar = id.charAt(0).toUpperCase();
+        const isOnline = userPresence[id] === true;
+        const onlineClass = isOnline ? 'online' : '';
+
+        const userItem = document.createElement('div');
+        userItem.className = `user-item ${activeUser === id ? 'active' : ''}`;
+        userItem.setAttribute('onclick', `openChat('${id}', this)`);
+        userItem.innerHTML = `
+          <div class="user-avatar">${firstChar}</div>
+          <div class="user-info">
+            <h4>
+              ${id}
+              <span class="online-dot ${onlineClass}" title="${isOnline ? 'Online' : 'Offline'}"></span>
+            </h4>
+            <p><i class="fas fa-clock"></i> just now</p>
+          </div>
+        `;
+        userListDiv.appendChild(userItem);
+      });
+    }
+
+    // Toggle sidebar on mobile
+    function toggleSidebar() {
+      sidebar.classList.toggle('show');
+    }
+
+    // Update header with selected user's info
+    function updateHeaderStatus(id) {
+      const isOnline = userPresence[id] === true;
+      activeUserNameSpan.innerText = id;
+      activeUserAvatar.innerText = id.charAt(0).toUpperCase();
+      onlineStatus.innerHTML = `<i class="fas fa-circle" style="color: ${isOnline ? '#22c55e' : '#94a3b8'}; font-size: 8px;"></i> ${isOnline ? 'Online' : 'Offline'}`;
+    }
+
+    // Reset header to default (no user selected)
+    function resetHeader() {
+      activeUserNameSpan.innerText = 'Select a user';
+      activeUserAvatar.innerText = '�9�4';
+      onlineStatus.innerHTML = `<i class="fas fa-circle" style="color: #94a3b8; font-size: 8px;"></i> Offline`;
+    }
+
+    // Open a specific chat
+    function openChat(id, element) {
+      if (activeUser === id) return; // already open
+
+      activeUser = id;
+
+      // Hide placeholder, show input area
+      placeholder.style.display = 'none';
+      inputArea.style.display = 'flex';
+
+      // Update header
+      updateHeaderStatus(id);
+
+      // Clear messages and reset pagination
+      messagesDiv.innerHTML = '';
+      messageSet.clear();
+      oldestMessageTime = null;
+      hasMoreMessages = true;
+
+      // Remove previous listeners
+      if (currentMessagesRef) {
+        currentMessagesRef.off();
+      }
+
+      // Set up new reference
+      currentMessagesRef = db.ref("chats/" + id).orderByChild('time');
+
+      // Load initial messages (last 20)
+      loadMoreMessages(true); // true = initial load
+
+      // Listen for new messages
+      currentMessagesRef.on('child_added', (snap) => {
+        if (!messageSet.has(snap.key)) {
+          const data = snap.val();
+          appendMessage(data, snap.key, true);
+        }
+      });
+
+      // Highlight the clicked user
+      document.querySelectorAll('.user-item').forEach(el => el.classList.remove('active'));
+      if (element) element.classList.add('active');
+
+      // On mobile, close sidebar after selecting a user
+      if (window.innerWidth <= 768) {
+        sidebar.classList.remove('show');
+      }
+    }
+
+    // Load older messages (pagination)
+    function loadMoreMessages(isInitial = false) {
+      if (!activeUser) return;
+      if (loadingOlder) return;
+      if (!hasMoreMessages && !isInitial) return;
+
+      loadingOlder = true;
+
+      if (!isInitial) {
+        const loadingDiv = document.createElement('div');
+        loadingDiv.className = 'loading-older';
+        loadingDiv.id = 'loadingOlder';
+        loadingDiv.innerText = 'Loading older messages...';
+        messagesDiv.insertBefore(loadingDiv, messagesDiv.firstChild);
+      }
+
+      let query = currentMessagesRef.limitToLast(20);
+      if (oldestMessageTime !== null) {
+        query = currentMessagesRef.endAt(oldestMessageTime - 1).limitToLast(20);
+      }
+
+      query.once('value', (snap) => {
+        const loadingElem = document.getElementById('loadingOlder');
+        if (loadingElem) loadingElem.remove();
+
+        if (!snap.exists()) {
+          hasMoreMessages = false;
+          loadingOlder = false;
+          return;
+        }
+
+        const messages = [];
+        snap.forEach((child) => {
+          if (!messageSet.has(child.key)) {
+            messageSet.add(child.key);
+            messages.push({ key: child.key, data: child.val() });
+          }
+        });
+
+        if (messages.length === 0) {
+          hasMoreMessages = false;
+          loadingOlder = false;
+          return;
+        }
+
+        const oldestInBatch = Math.min(...messages.map(m => m.data.time));
+        oldestMessageTime = oldestInBatch;
+
+        if (messages.length < 20) {
+          hasMoreMessages = false;
+        }
+
+        messages.reverse().forEach(m => {
+          prependMessage(m.data, m.key);
+        });
+
+        if (isInitial) {
+          messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
+
+        loadingOlder = false;
+      });
+    }
+
+    // Append a new message at the bottom
+    function appendMessage(data, key, shouldScroll = true) {
+      if (messageSet.has(key)) return;
+      messageSet.add(key);
+
+      const cls = data.sender === 'admin' ? 'msg-admin' : 'msg-user';
+      const senderLabel = data.sender === 'admin' ? 'You' : 'Visitor';
+
+      const msgDiv = document.createElement('div');
+      msgDiv.className = cls;
+      msgDiv.innerHTML = `<div class="msg-sender">${senderLabel}</div>${data.message}`;
+      messagesDiv.appendChild(msgDiv);
+
+      if (shouldScroll) {
+        messagesDiv.scrollTop = messagesDiv.scrollHeight;
+      }
+    }
+
+    // Prepend older messages at the top
+    function prependMessage(data, key) {
+      const cls = data.sender === 'admin' ? 'msg-admin' : 'msg-user';
+      const senderLabel = data.sender === 'admin' ? 'You' : 'Visitor';
+
+      const msgDiv = document.createElement('div');
+      msgDiv.className = cls;
+      msgDiv.innerHTML = `<div class="msg-sender">${senderLabel}</div>${data.message}`;
+
+      messagesDiv.insertBefore(msgDiv, messagesDiv.firstChild);
+    }
+
+    // Scroll listener for pagination
+    messagesDiv.addEventListener('scroll', () => {
+      if (messagesDiv.scrollTop === 0 && !loadingOlder && hasMoreMessages && activeUser) {
+        loadMoreMessages(false);
+      }
+    });
+
+    // Send message
+    function sendMessage() {
+      if (!activeUser) {
+        alert('Please select a user first');
+        return;
+      }
+
+      const text = document.getElementById('msg').value.trim();
+      if (!text) return;
+
+      db.ref("chats/" + activeUser).push({
+        sender: 'admin',
+        message: text,
+        time: Date.now()
+      });
+
+      document.getElementById('msg').value = '';
+    }
+
+    // Enter key
+    document.getElementById('msg').addEventListener('keypress', function(e) {
+      if (e.key === 'Enter') {
+        sendMessage();
+      }
+    });
+
+    // Initial render
+    renderUserList();
+
+    // Reset header to default (no user selected at start)
+    resetHeader();
+
+    // Close sidebar on window resize to desktop
+    window.addEventListener('resize', () => {
+      if (window.innerWidth > 768) {
+        sidebar.classList.remove('show');
+      }
+    });
+  </script>
+
+</body>
+
+</html>
